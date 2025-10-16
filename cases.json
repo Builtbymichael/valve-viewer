@@ -1,0 +1,10 @@
+{
+  "cases": [
+    {
+      "id": "case-001",
+      "name": "case-001",
+      "basePath": "cases/case-001/",
+      "files": ["test-inner-001.3mf"]
+    }
+  ]
+}
