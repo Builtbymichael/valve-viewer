@@ -17,6 +17,31 @@
         "test-outer-001.3mf",
         "test-outer-002.3mf"
       ]
+    },
+    {
+      "id": "case-003",
+      "name": "case-003",
+      "basePath": "cases/case-003/",
+      "files": [
+        "CNum24Sys1MInner1.3mf",
+        "CNum24Sys1MInner2.3mf"
+      ]
+    },
+    {
+      "id": "case-004",
+      "name": "case-004",
+      "basePath": "cases/case-004/",
+      "files": [
+        "CNum 24  sys 1 month.3mf",
+        "CNum24Sys1MInner1.3mf",
+        "CNum24Sys1MInner2.3mf",
+        "InnerWalls_CNum24Sys1M_plus_inputs.3mf",
+        "OuterWalls_Spline_plus_inputs.3mf",
+        "Point 151.3mf",
+        "Point 152.3mf",
+        "Point 153.3mf",
+        "Point 154.3mf"
+        ]
     }
   ]
 }
