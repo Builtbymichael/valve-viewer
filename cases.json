@@ -4,7 +4,19 @@
       "id": "case-001",
       "name": "case-001",
       "basePath": "cases/case-001/",
-      "files": ["test-inner-001.3mf"]
+      "files": [
+        "test-inner-001.3mf",
+        "test-inner-002.3mf"
+      ]
+    },
+    {
+      "id": "case-002",
+      "name": "case-002",
+      "basePath": "cases/case-002/",
+      "files": [
+        "test-outer-001.3mf",
+        "test-outer-002.3mf"
+      ]
     }
   ]
 }
