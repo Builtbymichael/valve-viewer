@@ -42,6 +42,24 @@
         "Point 153.3mf",
         "Point 154.3mf"
         ]
+    },
+    {
+      "id": "case-005",
+      "name": "case-005",
+      "basePath": "cases/case-005/",
+      "files": [
+        "-04 STL.3mf",
+        "-04_inner1.3mf",
+        "-04_inner2.3mf",
+        "-04_Outer1.3mf",
+        "-04_Outer2.3mf",
+        "InnerWalls_-04_Valve_plus_inputs.3mf",
+        "OuterWalls_-04_Valve_plus_inputs.3mf",
+        "Point 155.3mf",
+        "Point 156.3mf",
+        "Point 157.3mf",
+        "Point 158.3mf"
+      ]
     }
   ]
 }
