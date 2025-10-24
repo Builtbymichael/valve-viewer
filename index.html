@@ -17,16 +17,16 @@
     select, button, input[type="checkbox"] { font-size: 14px; }
     .file-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
     .file-item label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .pill { border: 1px solid #ddd; padding: 6px 10px; border-radius: 999px; background: #fff; cursor: pointer; }
     .loading { position: absolute; top: 12px; right: 12px; background: rgba(255,255,255,0.95); border: 1px solid #ddd; border-radius: 8px; padding: 6px 10px; font-size: 12px; display: none; }
     footer { padding: 8px 12px; font-size: 12px; color: #888; border-top: 1px solid #eee; }
+    .sep { width:1px; height:22px; background:#e5e5e5; margin:0 6px; }
+    label.toggle { display:flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid #ddd; border-radius:999px; background:#fff; cursor:pointer; }
   </style>
 
-  <!-- (Optional) Import maps shim for older browsers (e.g., older Safari) -->
+  <!-- Shim + import map -->
   <script async src="https://ga.jspm.io/npm:es-module-shims@1.9.0/dist/es-module-shims.js"></script>
-
-  <!-- Import map tells the browser what "three" means -->
   <script type="importmap">
   {
     "imports": {
@@ -35,7 +35,6 @@
   }
   </script>
 
-  <!-- (Optional) Quiet the favicon 404 -->
   <link rel="icon" href="data:,">
 </head>
 <body>
@@ -47,6 +46,9 @@
         <button class="pill" id="showAllBtn">Show all</button>
         <button class="pill" id="hideAllBtn">Hide all</button>
         <button class="pill" id="resetBtn">Reset view</button>
+        <div class="sep"></div>
+        <label class="toggle"><input type="checkbox" id="meshToggle"> Show mesh</label>
+        <label class="toggle"><input type="checkbox" id="axesToggle"> Show axes</label>
       </div>
       <div style="margin-left:auto; font-size:12px; color:#777;">
         Rotate: left-drag • Pan: right-drag • Zoom: wheel
@@ -73,7 +75,6 @@
     </main>
   </div>
 
-  <!-- Three.js + loaders -->
   <script type="module">
     import * as THREE from "three";
     import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js";
@@ -88,6 +89,8 @@
     const showAllBtn = document.getElementById('showAllBtn');
     const hideAllBtn = document.getElementById('hideAllBtn');
     const resetBtn   = document.getElementById('resetBtn');
+    const meshToggle = document.getElementById('meshToggle');
+    const axesToggle = document.getElementById('axesToggle');
 
     // Three.js basics
     const container = document.getElementById('canvas');
@@ -114,6 +117,8 @@
     const mfLoader  = new ThreeMFLoader();
 
     let currentGroup = null;
+    let tubeMesh = null;
+    let axesHelper = null, originDot = null;
     const items = []; // {name, object3D, checkbox}
 
     function randomColor() {
@@ -122,13 +127,21 @@
       return new THREE.Color().setHSL(h/360, 0.5, 0.55);
     }
 
+    function disposeMesh(mesh) {
+      if (mesh?.geometry) mesh.geometry.dispose();
+      if (mesh?.material?.dispose) mesh.material.dispose();
+    }
+
     function clearScene() {
+      if (tubeMesh) { disposeMesh(tubeMesh); scene.remove(tubeMesh); tubeMesh = null; }
+      if (axesHelper) { scene.remove(axesHelper); axesHelper = null; }
+      if (originDot) { disposeMesh(originDot); scene.remove(originDot); originDot = null; }
       if (!currentGroup) return;
       scene.remove(currentGroup);
       currentGroup.traverse(n => {
         if (n.isMesh) {
           n.geometry && n.geometry.dispose();
-          if (n.material?.dispose) n.material.dispose();
+          n.material?.dispose && n.material.dispose();
         }
       });
       currentGroup = null;
@@ -137,17 +150,13 @@
     }
 
     function fitToVisible(padding = 1.25) {
-      if (!currentGroup) return;
-      const box = new THREE.Box3();
-      let hasVisible = false;
-      currentGroup.traverse(n => {
-        if (n.isMesh && n.visible) {
-          const nb = new THREE.Box3().setFromObject(n);
-          if (!hasVisible) { box.copy(nb); hasVisible = true; }
-          else { box.union(nb); }
-        }
-      });
-      if (!hasVisible) return;
+      const group = new THREE.Group();
+      if (currentGroup) group.add(currentGroup.clone());
+      if (tubeMesh && tubeMesh.visible) group.add(tubeMesh.clone());
+
+      const box = new THREE.Box3().setFromObject(group);
+      if (!isFinite(box.min.x) || !isFinite(box.max.x)) return;
+
       const size = new THREE.Vector3(); const center = new THREE.Vector3();
       box.getSize(size); box.getCenter(center);
       const maxDim = Math.max(size.x, size.y, size.z);
@@ -156,6 +165,9 @@
       camera.position.set(center.x + dist, center.y + dist, center.z + dist);
       controls.target.copy(center);
       controls.update();
+
+      // keep axes centered/sized
+      if (axesToggle.checked) toggleAxes(true);
     }
 
     function addFileRow(labelText, object3D) {
@@ -169,6 +181,8 @@
       const chk = row.querySelector('input');
       chk.addEventListener('change', () => {
         object3D.visible = chk.checked;
+        if (meshToggle.checked) buildOrUpdateTube();
+        if (axesToggle.checked) toggleAxes(true);
       });
       filesList.appendChild(row);
       items.push({ name: labelText, object3D, checkbox: chk });
@@ -224,16 +238,232 @@
 
       scene.add(group);
       currentGroup = group;
+      if (meshToggle.checked) buildOrUpdateTube();
+      if (axesToggle.checked) toggleAxes(true);
       fitToVisible();
       loadingEl.style.display = 'none';
     }
 
+    // ---------- ring geometry helpers ----------
+    function getWorldVertices(object3D) {
+      const verts = [];
+      const v = new THREE.Vector3();
+      object3D.updateWorldMatrix(true, true);
+      object3D.traverse(n => {
+        if (n.isMesh && n.geometry?.attributes?.position) {
+          const pos = n.geometry.attributes.position;
+          for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(n.matrixWorld);
+            verts.push(v.clone());
+          }
+        }
+      });
+      return verts;
+    }
+
+    function estimateRingNormal(object3D) {
+      const normal = new THREE.Vector3(0,0,0);
+      const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+      const cb = new THREE.Vector3(), ab = new THREE.Vector3();
+      object3D.updateWorldMatrix(true, true);
+      object3D.traverse(n => {
+        if (n.isMesh && n.geometry?.attributes?.position) {
+          const pos = n.geometry.attributes.position;
+          for (let i = 0; i < pos.count - 2; i += 3) {
+            a.fromBufferAttribute(pos, i    ).applyMatrix4(n.matrixWorld);
+            b.fromBufferAttribute(pos, i + 1).applyMatrix4(n.matrixWorld);
+            c.fromBufferAttribute(pos, i + 2).applyMatrix4(n.matrixWorld);
+            cb.subVectors(c, b);
+            ab.subVectors(a, b);
+            cb.cross(ab);
+            normal.add(cb);
+          }
+        }
+      });
+      if (normal.length() < 1e-6) normal.set(0,0,1);
+      return normal.normalize();
+    }
+
+    function dominantAxis(centers) {
+      const mean = centers.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/centers.length);
+      let xx=0,xy=0,xz=0, yy=0,yz=0, zz=0;
+      for (const p of centers) {
+        const d = p.clone().sub(mean);
+        xx += d.x*d.x; xy += d.x*d.y; xz += d.x*d.z;
+        yy += d.y*d.y; yz += d.y*d.z; zz += d.z*d.z;
+      }
+      const C = new THREE.Matrix3().set(xx,xy,xz, xy,yy,yz, xz,yz,zz);
+      let v = new THREE.Vector3(1,0,0);
+      for (let i=0;i<12;i++){
+        const e=C.elements;
+        const nx = e[0]*v.x + e[1]*v.y + e[2]*v.z;
+        const ny = e[3]*v.x + e[4]*v.y + e[5]*v.z;
+        const nz = e[6]*v.x + e[7]*v.y + e[8]*v.z;
+        v.set(nx,ny,nz).normalize();
+      }
+      return v.length()<1e-6 ? new THREE.Vector3(0,0,1) : v.normalize();
+    }
+
+    function orderRingVertices(verts, center, planeN) {
+      let U = new THREE.Vector3(1,0,0).sub(planeN.clone().multiplyScalar(planeN.x));
+      if (U.length() < 1e-6) U = new THREE.Vector3(0,1,0).sub(planeN.clone().multiplyScalar(planeN.y));
+      U.normalize();
+      const V = new THREE.Vector3().crossVectors(planeN, U).normalize();
+
+      const pts = verts.map(p => {
+        const d = p.clone().sub(center);
+        const x = d.dot(U), y = d.dot(V);
+        const ang = Math.atan2(y, x);
+        return { p3: p, x, y, ang };
+      });
+
+      pts.sort((a,b) => a.ang - b.ang);
+      return { ordered3D: pts.map(t=>t.p3), U, V };
+    }
+
+    function resampleLoop(points3D, N) {
+      const M = points3D.length;
+      if (M === 0) return [];
+      const out = new Array(N);
+      for (let i=0;i<N;i++){
+        const t = i * M / N;
+        const i0 = Math.floor(t) % M;
+        const i1 = (i0 + 1) % M;
+        const f = t - Math.floor(t);
+        const p = new THREE.Vector3().copy(points3D[i0]).lerp(points3D[i1], f);
+        out[i] = p;
+      }
+      return out;
+    }
+
+    function bestShift(A, B) {
+      const n = A.length;
+      let bestS = 0, bestCost = Infinity;
+      for (let s=0;s<n;s++){
+        let cost = 0;
+        for (let i=0;i<n;i++){
+          const b = B[(i+s)%n];
+          const dx=A[i].x-b.x, dy=A[i].y-b.y, dz=A[i].z-b.z;
+          cost += dx*dx+dy*dy+dz*dz;
+        }
+        if (cost < bestCost) { bestCost = cost; bestS = s; }
+      }
+      return bestS;
+    }
+
+    // ---------- tube builder ----------
+    const SAMPLE_SEGMENTS = 256;
+
+    function buildOrUpdateTube() {
+      if (tubeMesh) { disposeMesh(tubeMesh); scene.remove(tubeMesh); tubeMesh = null; }
+      if (!meshToggle.checked) { if (axesToggle.checked) toggleAxes(true); return; }
+
+      const ringObjs = items.filter(it => it.object3D.visible).map(it => it.object3D);
+      if (ringObjs.length < 2) { if (axesToggle.checked) toggleAxes(true); return; }
+
+      const ringData = ringObjs.map(obj => {
+        const verts = getWorldVertices(obj);
+        if (!verts.length) return null;
+        const center = verts.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/verts.length);
+        const n = estimateRingNormal(obj);
+        const ordered = orderRingVertices(verts, center, n);
+        const samples = resampleLoop(ordered.ordered3D, SAMPLE_SEGMENTS);
+        return { obj, center, n, samples };
+      }).filter(Boolean);
+
+      if (ringData.length < 2) { if (axesToggle.checked) toggleAxes(true); return; }
+
+      const axis = dominantAxis(ringData.map(r => r.center));
+      ringData.sort((a,b) => a.center.dot(axis) - b.center.dot(axis));
+
+      const segs = SAMPLE_SEGMENTS;
+      const gaps = ringData.length - 1;
+      const triVerts = gaps * segs * 6;
+      const pos = new Float32Array(triVerts * 3);
+      let ptr = 0;
+      const pushTri = (p1,p2,p3) => {
+        pos[ptr++]=p1.x; pos[ptr++]=p1.y; pos[ptr++]=p1.z;
+        pos[ptr++]=p2.x; pos[ptr++]=p2.y; pos[ptr++]=p2.z;
+        pos[ptr++]=p3.x; pos[ptr++]=p3.y; pos[ptr++]=p3.z;
+      };
+
+      for (let i=0;i<ringData.length-1;i++){
+        const A = ringData[i].samples;
+        const B = ringData[i+1].samples;
+        const s = bestShift(A,B);
+        for (let j=0;j<segs;j++){
+          const jn = (j+1)%segs;
+          const b0 = B[(j+s)%segs];
+          const b1 = B[(jn+s)%segs];
+          pushTri(A[j], A[jn], b0);
+          pushTri(b0, A[jn], b1);
+        }
+      }
+
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.computeVertexNormals();
+
+      const m = new THREE.MeshStandardMaterial({
+        color: 0x9b1b1b,
+        transparent: true,
+        opacity: 0.35,
+        metalness: 0.0,
+        roughness: 0.9,
+        side: THREE.DoubleSide
+      });
+
+      tubeMesh = new THREE.Mesh(g, m);
+      tubeMesh.name = 'tubeMesh';
+      scene.add(tubeMesh);
+
+      // keep axes centered/sized
+      if (axesToggle.checked) toggleAxes(true);
+    }
+
+    // ---------- axes that follow the visible geometry ----------
+    function getVisibleCenterAndSize() {
+      const group = new THREE.Group();
+      if (currentGroup) group.add(currentGroup.clone());
+      if (tubeMesh && tubeMesh.visible) group.add(tubeMesh.clone());
+      const box = new THREE.Box3().setFromObject(group);
+      if (!isFinite(box.min.x) || !isFinite(box.max.x)) return null;
+      const size = new THREE.Vector3(); const center = new THREE.Vector3();
+      box.getSize(size); box.getCenter(center);
+      return { center, size };
+    }
+
+    function toggleAxes(on) {
+      if (on) {
+        const info = getVisibleCenterAndSize();
+        const len = info ? Math.max(info.size.x, info.size.y, info.size.z) * 0.25 : 40;
+        const pos = info ? info.center : new THREE.Vector3(0,0,0);
+
+        if (axesHelper) { scene.remove(axesHelper); axesHelper = null; }
+        axesHelper = new THREE.AxesHelper(len);
+        axesHelper.position.copy(pos);
+        axesHelper.renderOrder = 999;
+        axesHelper.traverse(o => { if (o.material) { o.material.depthTest = false; o.material.transparent = true; o.material.opacity = 0.9; }});
+        scene.add(axesHelper);
+
+        if (originDot) { disposeMesh(originDot); scene.remove(originDot); originDot = null; }
+        const geo = new THREE.SphereGeometry(len * 0.02, 16, 12);
+        const mat = new THREE.MeshBasicMaterial({ color: 0x222222, depthTest: false });
+        originDot = new THREE.Mesh(geo, mat);
+        originDot.position.copy(pos);
+        originDot.renderOrder = 1000;
+        scene.add(originDot);
+      } else {
+        if (axesHelper) { scene.remove(axesHelper); axesHelper = null; }
+        if (originDot) { disposeMesh(originDot); scene.remove(originDot); originDot = null; }
+      }
+    }
+
+    // ---------- init & UI wiring ----------
     async function init() {
-      // Load cases list
       const res = await fetch('cases.json', { cache: 'no-store' });
       const data = await res.json();
 
-      // Populate dropdown
       data.cases.forEach((c, i) => {
         const opt = document.createElement('option');
         opt.value = i;
@@ -241,29 +471,39 @@
         caseSelect.appendChild(opt);
       });
 
-      // Load first case
       await loadCase(data.cases[0]);
 
-      // Change case
       caseSelect.addEventListener('change', () => {
         const idx = parseInt(caseSelect.value, 10);
         loadCase(data.cases[idx]);
       });
 
-      // Buttons
       fitBtn.addEventListener('click', fitToVisible);
       showAllBtn.addEventListener('click', () => {
         items.forEach(it => { it.object3D.visible = true; it.checkbox.checked = true; });
+        if (meshToggle.checked) buildOrUpdateTube();
+        if (axesToggle.checked) toggleAxes(true);
         fitToVisible();
       });
       hideAllBtn.addEventListener('click', () => {
         items.forEach(it => { it.object3D.visible = false; it.checkbox.checked = false; });
+        if (meshToggle.checked) buildOrUpdateTube();
+        if (axesToggle.checked) toggleAxes(true);
       });
       resetBtn.addEventListener('click', () => {
         camera.position.set(150,150,150);
         controls.target.set(0,0,0);
         controls.update();
+        if (axesToggle.checked) toggleAxes(true);
         fitToVisible();
+      });
+
+      meshToggle.addEventListener('change', () => {
+        buildOrUpdateTube();
+        fitToVisible();
+      });
+      axesToggle.addEventListener('change', () => {
+        toggleAxes(axesToggle.checked);
       });
     }
 
