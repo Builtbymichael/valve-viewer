@@ -9,10 +9,10 @@
     #app { display: grid; grid-template-columns: 320px 1fr; grid-template-rows: auto 1fr; height: 100%; }
     header { grid-column: 1 / 3; padding: 10px 14px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; }
     header h1 { font-size: 16px; margin: 0; }
-    #sidebar { padding: 12px; border-right: 1px solid #eee; overflow: auto; }
+    #sidebar { padding: 12px; border-right: 1px solid #eee; overflow: auto; display:flex; flex-direction:column; gap:14px; }
     #viewer { position: relative; background: #fafafa; }
     #canvas { position: absolute; inset: 0; }
-    .block { margin-bottom: 14px; }
+    .block { margin-bottom: 0; }
     .label { font-size: 12px; color: #666; margin-bottom: 6px; }
     select, button, input[type="checkbox"] { font-size: 14px; }
     .file-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
@@ -23,6 +23,17 @@
     footer { padding: 8px 12px; font-size: 12px; color: #888; border-top: 1px solid #eee; }
     .sep { width:1px; height:22px; background:#e5e5e5; margin:0 6px; }
     label.toggle { display:flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid #ddd; border-radius:999px; background:#fff; cursor:pointer; }
+    .legend { font-size:12px; border:1px solid #eee; border-radius:8px; padding:8px; background:#fff; }
+    .legend .row { display:flex; justify-content:space-between; gap:10px; }
+    .sw { width:12px; height:12px; border-radius:3px; display:inline-block; border:1px solid #ddd; margin-right:6px; vertical-align:-2px; }
+    .sw.x { background:#ff4d4d; }  /* X red */
+    .sw.y { background:#1ac41a; }  /* Y green */
+    .sw.z { background:#2c72ff; }  /* Z blue */
+    .metrics { font-size:13px; line-height:1.5; border:1px solid #eee; border-radius:8px; padding:10px; background:#fff; }
+    .metrics .row { display:flex; justify-content:space-between; gap:8px; }
+    .metrics .row + .row { margin-top:6px; }
+    .metrics .small { color:#666; font-size:12px; }
+    .grow { flex:1 1 auto; }
   </style>
 
   <!-- Shim + import map -->
@@ -66,6 +77,29 @@
         <div id="filesList"></div>
       </div>
 
+      <div class="block">
+        <div class="label">Measurements <span class="small">(mm)</span></div>
+        <div class="metrics" id="metricsBox">
+          <div class="row"><span>Visible splines</span><strong id="m_rings">–</strong></div>
+          <div class="row"><span>Total axial length</span><strong id="m_axial_total">–</strong></div>
+          <div class="row"><span>Spline spacing (min / max)</span><strong id="m_axial_minmax">–</strong></div>
+          <div class="row"><span>Max diameter (⊥ axis)</span><strong id="m_diam">–</strong></div>
+          <div class="row"><span>Perimeter (min / max)</span><strong id="m_perim_minmax">–</strong></div>
+          <div class="row small"><span>Bounding box (W×D×H)</span><span id="m_bbox">–</span></div>
+        </div>
+      </div>
+
+      <div class="grow"></div> <!-- pushes legend to bottom -->
+
+      <div class="block">
+        <div class="label">Axes legend (patient coordinates)</div>
+        <div class="legend">
+          <div class="row"><div><span class="sw x"></span><strong>X</strong></div><div>L (−) ↔ R (+)</div></div>
+          <div class="row"><div><span class="sw y"></span><strong>Y</strong></div><div>A (−) ↔ P (+)</div></div>
+          <div class="row"><div><span class="sw z"></span><strong>Z</strong></div><div>I (−) ↔ S (+)</div></div>
+        </div>
+      </div>
+
       <footer>Tip: if something looks tiny or huge, click “Fit visible”.</footer>
     </aside>
 
@@ -81,6 +115,9 @@
     import { STLLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/STLLoader.js";
     import { ThreeMFLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/3MFLoader.js";
 
+    // --- Units ---
+    const UNIT_SCALE = 1; // Model units → mm
+
     // UI
     const caseSelect = document.getElementById('caseSelect');
     const filesList  = document.getElementById('filesList');
@@ -91,6 +128,14 @@
     const resetBtn   = document.getElementById('resetBtn');
     const meshToggle = document.getElementById('meshToggle');
     const axesToggle = document.getElementById('axesToggle');
+
+    // metrics els
+    const m_rings = document.getElementById('m_rings');
+    const m_axial_total = document.getElementById('m_axial_total');
+    const m_axial_minmax = document.getElementById('m_axial_minmax');
+    const m_diam = document.getElementById('m_diam');
+    const m_perim_minmax = document.getElementById('m_perim_minmax');
+    const m_bbox = document.getElementById('m_bbox');
 
     // Three.js basics
     const container = document.getElementById('canvas');
@@ -166,7 +211,6 @@
       controls.target.copy(center);
       controls.update();
 
-      // keep axes centered/sized
       if (axesToggle.checked) toggleAxes(true);
     }
 
@@ -183,6 +227,7 @@
         object3D.visible = chk.checked;
         if (meshToggle.checked) buildOrUpdateTube();
         if (axesToggle.checked) toggleAxes(true);
+        updateMeasurements();
       });
       filesList.appendChild(row);
       items.push({ name: labelText, object3D, checkbox: chk });
@@ -241,6 +286,7 @@
       if (meshToggle.checked) buildOrUpdateTube();
       if (axesToggle.checked) toggleAxes(true);
       fitToVisible();
+      updateMeasurements();
       loadingEl.style.display = 'none';
     }
 
@@ -305,6 +351,7 @@
     }
 
     function orderRingVertices(verts, center, planeN) {
+      // choose U from world X projected to ring plane; fallback to Y
       let U = new THREE.Vector3(1,0,0).sub(planeN.clone().multiplyScalar(planeN.x));
       if (U.length() < 1e-6) U = new THREE.Vector3(0,1,0).sub(planeN.clone().multiplyScalar(planeN.y));
       U.normalize();
@@ -417,8 +464,8 @@
       tubeMesh.name = 'tubeMesh';
       scene.add(tubeMesh);
 
-      // keep axes centered/sized
       if (axesToggle.checked) toggleAxes(true);
+      updateMeasurements();
     }
 
     // ---------- axes that follow the visible geometry ----------
@@ -430,7 +477,7 @@
       if (!isFinite(box.min.x) || !isFinite(box.max.x)) return null;
       const size = new THREE.Vector3(); const center = new THREE.Vector3();
       box.getSize(size); box.getCenter(center);
-      return { center, size };
+      return { center, size, box };
     }
 
     function toggleAxes(on) {
@@ -459,6 +506,82 @@
       }
     }
 
+    // ---------- formatting & measurements ----------
+    function fmt2(v) { return isFinite(v) ? Number(v).toFixed(2) : "–"; }
+
+    function updateMeasurements() {
+      // visible splines (3MF/STL objects toggled on)
+      const ringObjs = items.filter(it => it.object3D.visible).map(it => it.object3D);
+      m_rings.textContent = ringObjs.length;
+
+      // bbox of everything visible (splines + mesh)
+      const info = getVisibleCenterAndSize();
+      if (!info) {
+        m_axial_total.textContent = m_axial_minmax.textContent = m_diam.textContent = m_perim_minmax.textContent = m_bbox.textContent = "–";
+        return;
+      }
+      const size = info.size.clone().multiplyScalar(UNIT_SCALE);
+      m_bbox.textContent = `${fmt2(size.x)} × ${fmt2(size.y)} × ${fmt2(size.z)}`;
+
+      // centers & axis for spacing
+      const centers = ringObjs.map(o => {
+        const verts = getWorldVertices(o);
+        return verts.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/verts.length);
+      });
+      if (centers.length >= 2) {
+        const axis = dominantAxis(centers);
+        const t = centers.map(c => c.dot(axis)).sort((a,b)=>a-b);
+        const diffs = [];
+        for (let i=0;i<t.length-1;i++) diffs.push((t[i+1]-t[i]) * UNIT_SCALE);
+        const total = (t[t.length-1]-t[0]) * UNIT_SCALE;
+        m_axial_total.textContent = fmt2(total);
+        m_axial_minmax.textContent = `${fmt2(Math.min(...diffs))} / ${fmt2(Math.max(...diffs))}`;
+      } else {
+        m_axial_total.textContent = m_axial_minmax.textContent = "–";
+      }
+
+      // true perimeters and per-spline max diameter (in their own planes)
+      let perims = [];
+      let ringMaxDiam = 0;
+
+      const SAMPLE_MEAS = 512; // higher sampling for measurement accuracy
+      for (const o of ringObjs) {
+        const verts = getWorldVertices(o);
+        if (!verts.length) continue;
+        const center = verts.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/verts.length);
+        const n = estimateRingNormal(o);
+        const ordered = orderRingVertices(verts, center, n);
+        const smp = resampleLoop(ordered.ordered3D, SAMPLE_MEAS);
+
+        // perimeter (sum of edge lengths around closed loop)
+        let peri = 0;
+        for (let i=0;i<smp.length;i++) {
+          const a = smp[i], b = smp[(i+1)%smp.length];
+          peri += a.distanceTo(b);
+        }
+        perims.push(peri * UNIT_SCALE);
+
+        // max diameter (within this spline loop)
+        let md = 0;
+        for (let i=0;i<smp.length;i++) {
+          const ai = smp[i];
+          for (let j=i+1;j<smp.length;j++) {
+            const d = ai.distanceTo(smp[j]);
+            if (d>md) md = d;
+          }
+        }
+        if (md > ringMaxDiam) ringMaxDiam = md;
+      }
+
+      if (perims.length) {
+        const pMin = Math.min(...perims), pMax = Math.max(...perims);
+        m_perim_minmax.textContent = `${fmt2(pMin)} / ${fmt2(pMax)}`;
+        m_diam.textContent = fmt2(ringMaxDiam * UNIT_SCALE);
+      } else {
+        m_perim_minmax.textContent = m_diam.textContent = "–";
+      }
+    }
+
     // ---------- init & UI wiring ----------
     async function init() {
       const res = await fetch('cases.json', { cache: 'no-store' });
@@ -478,17 +601,19 @@
         loadCase(data.cases[idx]);
       });
 
-      fitBtn.addEventListener('click', fitToVisible);
+      fitBtn.addEventListener('click', () => { fitToVisible(); updateMeasurements(); });
       showAllBtn.addEventListener('click', () => {
         items.forEach(it => { it.object3D.visible = true; it.checkbox.checked = true; });
         if (meshToggle.checked) buildOrUpdateTube();
         if (axesToggle.checked) toggleAxes(true);
         fitToVisible();
+        updateMeasurements();
       });
       hideAllBtn.addEventListener('click', () => {
         items.forEach(it => { it.object3D.visible = false; it.checkbox.checked = false; });
         if (meshToggle.checked) buildOrUpdateTube();
         if (axesToggle.checked) toggleAxes(true);
+        updateMeasurements();
       });
       resetBtn.addEventListener('click', () => {
         camera.position.set(150,150,150);
@@ -496,11 +621,13 @@
         controls.update();
         if (axesToggle.checked) toggleAxes(true);
         fitToVisible();
+        updateMeasurements();
       });
 
       meshToggle.addEventListener('change', () => {
         buildOrUpdateTube();
         fitToVisible();
+        updateMeasurements();
       });
       axesToggle.addEventListener('change', () => {
         toggleAxes(axesToggle.checked);
