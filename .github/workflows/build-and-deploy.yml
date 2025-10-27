@@ -1,0 +1,40 @@
+name: Build cases.json and deploy Pages
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - "cases/**"
+      - "build-cases.mjs"
+      - ".github/workflows/build-and-deploy.yml"
+      - "index.html"
+      - "cases.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Generate cases.json
+        run: node build-cases.mjs
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
