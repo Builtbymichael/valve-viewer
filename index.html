@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Valve Case Viewer (3MF/STL)</title>
+  <title>Veryan Valve Viewer</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     html, body { height: 100%; margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
@@ -20,6 +20,7 @@
     .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .pill { border: 1px solid #ddd; padding: 6px 10px; border-radius: 999px; background: #fff; cursor: pointer; }
     .loading { position: absolute; top: 12px; right: 12px; background: rgba(255,255,255,0.95); border: 1px solid #ddd; border-radius: 8px; padding: 6px 10px; font-size: 12px; display: none; }
+    .error { position:absolute; left:12px; top:12px; background:#fff3f3; border:1px solid #f3c4c4; color:#8a2222; padding:6px 10px; border-radius:8px; font-size:12px; display:none; max-width:50vw; }
     footer { padding: 8px 12px; font-size: 12px; color: #888; border-top: 1px solid #eee; }
     .sep { width:1px; height:22px; background:#e5e5e5; margin:0 6px; }
     label.toggle { display:flex; align-items:center; gap:6px; padding:4px 10px; border:1px solid #ddd; border-radius:999px; background:#fff; cursor:pointer; }
@@ -34,6 +35,7 @@
     .metrics .row + .row { margin-top:6px; }
     .metrics .small { color:#666; font-size:12px; }
     .grow { flex:1 1 auto; }
+    .version { font-size:12px; color:#777; margin-left:8px; }
   </style>
 
   <!-- Shim + import map -->
@@ -51,7 +53,7 @@
 <body>
   <div id="app">
     <header>
-      <h1>Veryan Valve Viewer</h1>
+      <h1>Veryan Valve Viewer <span class="version">v1.3</span></h1>
       <div class="toolbar">
         <button class="pill" id="fitBtn">Fit visible</button>
         <button class="pill" id="showAllBtn">Show all</button>
@@ -60,6 +62,8 @@
         <div class="sep"></div>
         <label class="toggle"><input type="checkbox" id="meshToggle"> Show mesh</label>
         <label class="toggle"><input type="checkbox" id="axesToggle"> Show axes</label>
+        <div class="sep"></div>
+        <button class="pill" id="refreshBtn" title="Read folders & files from SharePoint and update the case list.">Refresh files</button>
       </div>
       <div style="margin-left:auto; font-size:12px; color:#777;">
         Rotate: left-drag • Pan: right-drag • Zoom: wheel
@@ -104,6 +108,7 @@
     </aside>
 
     <main id="viewer">
+      <div class="error" id="errorBox"></div>
       <div id="canvas"></div>
       <div class="loading" id="loading">Loading…</div>
     </main>
@@ -122,12 +127,14 @@
     const caseSelect = document.getElementById('caseSelect');
     const filesList  = document.getElementById('filesList');
     const loadingEl  = document.getElementById('loading');
+    const errorBox   = document.getElementById('errorBox');
     const fitBtn     = document.getElementById('fitBtn');
     const showAllBtn = document.getElementById('showAllBtn');
     const hideAllBtn = document.getElementById('hideAllBtn');
     const resetBtn   = document.getElementById('resetBtn');
     const meshToggle = document.getElementById('meshToggle');
     const axesToggle = document.getElementById('axesToggle');
+    const refreshBtn = document.getElementById('refreshBtn');
 
     // metrics els
     const m_rings = document.getElementById('m_rings');
@@ -137,7 +144,7 @@
     const m_perim_minmax = document.getElementById('m_perim_minmax');
     const m_bbox = document.getElementById('m_bbox');
 
-    // Three.js basics
+    // Three basics
     const container = document.getElementById('canvas');
     const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -165,6 +172,31 @@
     let tubeMesh = null;
     let axesHelper = null, originDot = null;
     const items = []; // {name, object3D, checkbox}
+
+    // ---------- helpers ----------
+    function log(...a){ console.log('[viewer]', ...a); }
+    function showError(msg){
+      errorBox.textContent = msg;
+      errorBox.style.display = 'block';
+      setTimeout(()=>{ errorBox.style.display='none'; }, 6000);
+    }
+    function encodeSP(p){ return p.replace(/ /g, '%20'); } // basic encoding for server-relative paths with spaces
+    function encodeUrl(u){ return encodeURI(u); }          // full URL for loaders (keeps / and ?)
+
+    function getQueryParam(name){
+      const v = new URLSearchParams(location.search).get(name);
+      return v ? decodeURIComponent(v) : null;
+    }
+
+    // Infer ROOT: prefer ?root=..., else guess from location
+    const ROOT = getQueryParam('root') || (() => {
+      // try to find ".../Site Assets/valve-viewer"
+      const m = location.pathname.match(/(.+\/Site%20Assets\/valve-viewer)/i) || location.pathname.match(/(.+\/Site Assets\/valve-viewer)/i);
+      return m ? decodeURIComponent(m[1]) : '';
+    })();
+
+    log('Using ROOT:', ROOT || '(not set)');
+    if (!ROOT) showError('No SharePoint root detected. Add ?root=/sites/Viewer/Shared%20Documents/Site%20Assets/valve-viewer to the URL.');
 
     function randomColor() {
       const hues = [0, 40, 200];
@@ -210,7 +242,6 @@
       camera.position.set(center.x + dist, center.y + dist, center.z + dist);
       controls.target.copy(center);
       controls.update();
-
       if (axesToggle.checked) toggleAxes(true);
     }
 
@@ -218,10 +249,7 @@
       const row = document.createElement('div');
       row.className = 'file-item';
       const id = 'chk_' + Math.random().toString(36).slice(2);
-      row.innerHTML = `
-        <input id="${id}" type="checkbox" checked />
-        <label for="${id}">${labelText}</label>
-      `;
+      row.innerHTML = `<input id="${id}" type="checkbox" checked /><label for="${id}">${labelText}</label>`;
       const chk = row.querySelector('input');
       chk.addEventListener('change', () => {
         object3D.visible = chk.checked;
@@ -234,10 +262,11 @@
     }
 
     function loadModel(url) {
-      const ext = url.split('.').pop().toLowerCase();
+      const u = encodeUrl(url);
+      const ext = u.split('.').pop().toLowerCase().split('?')[0];
       return new Promise((resolve, reject) => {
         if (ext === 'stl') {
-          stlLoader.load(url, geom => {
+          stlLoader.load(u, geom => {
             geom.computeVertexNormals();
             const mesh = new THREE.Mesh(
               geom,
@@ -246,7 +275,7 @@
             resolve(mesh);
           }, undefined, reject);
         } else if (ext === '3mf') {
-          mfLoader.load(url, obj => {
+          mfLoader.load(u, obj => {
             obj.traverse(n => {
               if (n.isMesh) {
                 if (!n.material) n.material = new THREE.MeshStandardMaterial({ color: randomColor(), metalness: 0.1, roughness: 0.75 });
@@ -256,7 +285,7 @@
             resolve(obj);
           }, undefined, reject);
         } else {
-          reject(new Error('Unsupported file: ' + ext));
+          reject(new Error('Unsupported file: ' + u));
         }
       });
     }
@@ -269,11 +298,11 @@
       group.name = entry.id;
 
       for (const fname of entry.files) {
-        const url = entry.basePath + fname;
+        const url = entry.basePath + fname; // server-relative
         try {
           const obj = await loadModel(url);
           obj.name = fname;
-          obj.visible = true; // start visible
+          obj.visible = true;
           group.add(obj);
           addFileRow(fname, obj);
         } catch (e) {
@@ -351,7 +380,6 @@
     }
 
     function orderRingVertices(verts, center, planeN) {
-      // choose U from world X projected to ring plane; fallback to Y
       let U = new THREE.Vector3(1,0,0).sub(planeN.clone().multiplyScalar(planeN.x));
       if (U.length() < 1e-6) U = new THREE.Vector3(0,1,0).sub(planeN.clone().multiplyScalar(planeN.y));
       U.normalize();
@@ -361,11 +389,11 @@
         const d = p.clone().sub(center);
         const x = d.dot(U), y = d.dot(V);
         const ang = Math.atan2(y, x);
-        return { p3: p, x, y, ang };
+        return { p3: p, ang };
       });
 
       pts.sort((a,b) => a.ang - b.ang);
-      return { ordered3D: pts.map(t=>t.p3), U, V };
+      return pts.map(t=>t.p3);
     }
 
     function resampleLoop(points3D, N) {
@@ -412,10 +440,9 @@
         const verts = getWorldVertices(obj);
         if (!verts.length) return null;
         const center = verts.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/verts.length);
-        const n = estimateRingNormal(obj);
-        const ordered = orderRingVertices(verts, center, n);
-        const samples = resampleLoop(ordered.ordered3D, SAMPLE_SEGMENTS);
-        return { obj, center, n, samples };
+        const ordered = orderRingVertices(verts, center, estimateRingNormal(obj));
+        const samples = resampleLoop(ordered, SAMPLE_SEGMENTS);
+        return { obj, center, samples };
       }).filter(Boolean);
 
       if (ringData.length < 2) { if (axesToggle.checked) toggleAxes(true); return; }
@@ -468,7 +495,7 @@
       updateMeasurements();
     }
 
-    // ---------- axes that follow the visible geometry ----------
+    // ---------- axes ----------
     function getVisibleCenterAndSize() {
       const group = new THREE.Group();
       if (currentGroup) group.add(currentGroup.clone());
@@ -506,15 +533,13 @@
       }
     }
 
-    // ---------- formatting & measurements ----------
+    // ---------- measurements ----------
     function fmt2(v) { return isFinite(v) ? Number(v).toFixed(2) : "–"; }
 
     function updateMeasurements() {
-      // visible splines (3MF/STL objects toggled on)
       const ringObjs = items.filter(it => it.object3D.visible).map(it => it.object3D);
       m_rings.textContent = ringObjs.length;
 
-      // bbox of everything visible (splines + mesh)
       const info = getVisibleCenterAndSize();
       if (!info) {
         m_axial_total.textContent = m_axial_minmax.textContent = m_diam.textContent = m_perim_minmax.textContent = m_bbox.textContent = "–";
@@ -523,7 +548,6 @@
       const size = info.size.clone().multiplyScalar(UNIT_SCALE);
       m_bbox.textContent = `${fmt2(size.x)} × ${fmt2(size.y)} × ${fmt2(size.z)}`;
 
-      // centers & axis for spacing
       const centers = ringObjs.map(o => {
         const verts = getWorldVertices(o);
         return verts.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/verts.length);
@@ -540,37 +564,23 @@
         m_axial_total.textContent = m_axial_minmax.textContent = "–";
       }
 
-      // true perimeters and per-spline max diameter (in their own planes)
       let perims = [];
       let ringMaxDiam = 0;
-
-      const SAMPLE_MEAS = 512; // higher sampling for measurement accuracy
+      const SAMPLE_MEAS = 512;
       for (const o of ringObjs) {
         const verts = getWorldVertices(o);
         if (!verts.length) continue;
         const center = verts.reduce((acc,p)=>acc.add(p), new THREE.Vector3()).multiplyScalar(1/verts.length);
-        const n = estimateRingNormal(o);
-        const ordered = orderRingVertices(verts, center, n);
-        const smp = resampleLoop(ordered.ordered3D, SAMPLE_MEAS);
+        const ordered = orderRingVertices(verts, center, estimateRingNormal(o));
+        const smp = resampleLoop(ordered, SAMPLE_MEAS);
 
-        // perimeter (sum of edge lengths around closed loop)
         let peri = 0;
-        for (let i=0;i<smp.length;i++) {
-          const a = smp[i], b = smp[(i+1)%smp.length];
-          peri += a.distanceTo(b);
-        }
+        for (let i=0;i<smp.length;i++) peri += smp[i].distanceTo(smp[(i+1)%smp.length]);
         perims.push(peri * UNIT_SCALE);
 
-        // max diameter (within this spline loop)
         let md = 0;
-        for (let i=0;i<smp.length;i++) {
-          const ai = smp[i];
-          for (let j=i+1;j<smp.length;j++) {
-            const d = ai.distanceTo(smp[j]);
-            if (d>md) md = d;
-          }
-        }
-        if (md > ringMaxDiam) ringMaxDiam = md;
+        for (let i=0;i<smp.length;i++) for (let j=i+1;j<smp.length;j++) md = Math.max(md, smp[i].distanceTo(smp[j]));
+        ringMaxDiam = Math.max(ringMaxDiam, md);
       }
 
       if (perims.length) {
@@ -582,24 +592,122 @@
       }
     }
 
+    // ---------- SharePoint refresh (JSON-forced) ----------
+    const ALLOWED_EXTS = new Set(['.3mf', '.stl']);
+
+    async function spGetJson(relativeUrl) {
+      const url = relativeUrl + (relativeUrl.includes('?') ? '&' : '?') +
+        "$select=Name,ServerRelativeUrl,Files/Name,Files/ServerRelativeUrl,Folders/Name,Folders/ServerRelativeUrl&$expand=Folders,Files&$format=json";
+
+      const res = await fetch(url, {
+        headers: { 'Accept': 'application/json;odata=verbose' }
+      });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    function pickFolders(json) {
+      // handles both verbose and (if ever used) nometadata
+      const d = json.d || json;
+      return (d.Folders && (d.Folders.results || d.Folders)) || [];
+    }
+    function pickFiles(json) {
+      const d = json.d || json;
+      return (d.Files && (d.Files.results || d.Files)) || [];
+    }
+
+    function extOf(name){ return name.slice(name.lastIndexOf('.')).toLowerCase(); }
+
+    async function refreshFromSharePoint() {
+      if (!ROOT) { showError('Missing ROOT parameter.'); return; }
+
+      try {
+        loadingEl.style.display = 'block';
+        log('Refreshing from SharePoint…');
+        const casesFolder = encodeSP(`${ROOT}/cases`);
+        const rootApi = `/_api/web/GetFolderByServerRelativePath(decodedurl='${casesFolder}')`;
+        log('API root:', rootApi);
+
+        const casesJson = await spGetJson(rootApi);
+        const folders = pickFolders(casesJson);
+        log('Found case folders:', folders.map(f => f.Name));
+
+        const cases = [];
+        for (const f of folders) {
+          const folderUrl = f.ServerRelativeUrl || f.ServerRelativeUrl || `${casesFolder}/${f.Name}`;
+          const filesJson = await spGetJson(`/_api/web/GetFolderByServerRelativePath(decodedurl='${encodeSP(folderUrl)}')`);
+          const files = pickFiles(filesJson)
+            .map(fl => fl.Name)
+            .filter(n => ALLOWED_EXTS.has(extOf(n)));
+          if (files.length) {
+            cases.push({
+              id: f.Name,
+              name: f.Name,
+              basePath: `${folderUrl}/`,
+              files: files.sort((a,b)=>a.localeCompare(b, undefined, { numeric:true }))
+            });
+          }
+        }
+
+        if (!cases.length) {
+          showError('No .3mf/.stl files found inside subfolders of /cases.');
+          caseSelect.innerHTML = '';
+          filesList.innerHTML = '';
+          clearScene();
+          loadingEl.style.display = 'none';
+          return;
+        }
+
+        // Populate dropdown
+        caseSelect.innerHTML = '';
+        cases.sort((a,b)=>a.id.localeCompare(b.id, undefined, { numeric:true }))
+              .forEach((c, i) => {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.textContent = c.name || c.id;
+                caseSelect.appendChild(opt);
+              });
+
+        // Load first
+        await loadCase(cases[0]);
+
+        // Wire change
+        caseSelect.onchange = () => {
+          const idx = parseInt(caseSelect.value, 10);
+          loadCase(cases[idx]);
+        };
+
+        log('Refresh complete.');
+      } catch (err) {
+        console.error(err);
+        showError('Could not refresh from SharePoint. See Console for details.');
+      } finally {
+        loadingEl.style.display = 'none';
+      }
+    }
+
     // ---------- init & UI wiring ----------
     async function init() {
-      const res = await fetch('cases.json', { cache: 'no-store' });
-      const data = await res.json();
-
-      data.cases.forEach((c, i) => {
-        const opt = document.createElement('option');
-        opt.value = i;
-        opt.textContent = c.name || c.id;
-        caseSelect.appendChild(opt);
-      });
-
-      await loadCase(data.cases[0]);
-
-      caseSelect.addEventListener('change', () => {
-        const idx = parseInt(caseSelect.value, 10);
-        loadCase(data.cases[idx]);
-      });
+      // optional: try local cases.json first (non-SharePoint fallback)
+      try {
+        const res = await fetch('cases.json', { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.cases?.length) {
+            data.cases.forEach((c, i) => {
+              const opt = document.createElement('option');
+              opt.value = i;
+              opt.textContent = c.name || c.id;
+              caseSelect.appendChild(opt);
+            });
+            await loadCase(data.cases[0]);
+            caseSelect.addEventListener('change', () => {
+              const idx = parseInt(caseSelect.value, 10);
+              loadCase(data.cases[idx]);
+            });
+          }
+        }
+      } catch {}
 
       fitBtn.addEventListener('click', () => { fitToVisible(); updateMeasurements(); });
       showAllBtn.addEventListener('click', () => {
@@ -623,7 +731,6 @@
         fitToVisible();
         updateMeasurements();
       });
-
       meshToggle.addEventListener('change', () => {
         buildOrUpdateTube();
         fitToVisible();
@@ -632,9 +739,14 @@
       axesToggle.addEventListener('change', () => {
         toggleAxes(axesToggle.checked);
       });
+      refreshBtn.addEventListener('click', () => {
+        console.clear();
+        log('Using ROOT:', ROOT);
+        refreshFromSharePoint();
+      });
     }
 
-    // Resize handling
+    // Resize
     function onResize() {
       const w = container.clientWidth, h = container.clientHeight;
       renderer.setSize(w, h);
@@ -652,7 +764,7 @@
 
     init().catch(err => {
       loadingEl.style.display = 'none';
-      alert('Could not start viewer. Check cases.json and file paths.');
+      showError('Could not start viewer. Check Console.');
       console.error(err);
     });
   </script>
