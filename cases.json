@@ -3,7 +3,7 @@
     {
       "id": "case-001",
       "name": "case-001",
-      "basePath": "cases/case-001/",
+      "basePath": "valve-cases/case-001/",
       "files": [
         "test-inner-001.3mf",
         "test-inner-002.3mf"
@@ -12,7 +12,7 @@
     {
       "id": "case-002",
       "name": "case-002",
-      "basePath": "cases/case-002/",
+      "basePath": "valve-cases/case-002/",
       "files": [
         "test-outer-001.3mf",
         "test-outer-002.3mf"
@@ -21,7 +21,7 @@
     {
       "id": "case-003",
       "name": "case-003",
-      "basePath": "cases/case-003/",
+      "basePath": "valve-cases/case-003/",
       "files": [
         "CNum24Sys1MInner1.3mf",
         "CNum24Sys1MInner2.3mf"
@@ -30,7 +30,7 @@
     {
       "id": "case-004",
       "name": "case-004",
-      "basePath": "cases/case-004/",
+      "basePath": "valve-cases/case-004/",
       "files": [
         "CNum 24  sys 1 month.3mf",
         "CNum24Sys1MInner1.3mf",
@@ -41,12 +41,12 @@
         "Point 152.3mf",
         "Point 153.3mf",
         "Point 154.3mf"
-        ]
+      ]
     },
     {
       "id": "case-005",
       "name": "case-005",
-      "basePath": "cases/case-005/",
+      "basePath": "valve-cases/case-005/",
       "files": [
         "-04 STL.3mf",
         "-04_inner1.3mf",
@@ -59,6 +59,16 @@
         "Point 156.3mf",
         "Point 157.3mf",
         "Point 158.3mf"
+      ]
+    }
+  ],
+  "models": [
+    {
+      "id": "model-004",
+      "name": "model-004",
+      "basePath": "valve-models/model-004/",
+      "files": [
+        "-04 STL.3mf"
       ]
     }
   ]
